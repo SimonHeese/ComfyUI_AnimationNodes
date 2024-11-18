@@ -19,12 +19,13 @@ class AnimatedOffsetPadding:
             "vert_add": ("INT", {"default": 64, "min": 0, "max": s.MAX_RESOLUTION, "step": 8}),
             "vert_offset_start": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
             "vert_offset_end": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+            "feathering": ("INT", {"default": 40, "min": 0, "max": s.MAX_RESOLUTION, "step": 1}),
             "anim_start": (["linear", "fast", "slow"],),
             "anim_end": (["linear", "fast", "slow"],),
-            "feathering": ("INT", {"default": 40, "min": 0, "max": s.MAX_RESOLUTION, "step": 1}),
         }}
 
-    RETURN_TYPES = ("IMAGE", "MASK")
+    RETURN_TYPES = ("IMAGE", "MASK", "MASK")
+    RETURN_NAMES = ("IMAGE", "MASK", "ATTN_MASK")
     FUNCTION = "expand_image"
     CATEGORY = "image"
 
@@ -73,6 +74,7 @@ class AnimatedOffsetPadding:
         
         new_images = torch.ones((batch_size, new_height, new_width, c), dtype=torch.float32) * 0.5
         masks = []
+        attn_masks = []
         
         for i in range(batch_size):
             progress = self.bezier(i / (batch_size - 1) if batch_size > 1 else 0, anim_start, anim_end)
@@ -80,14 +82,23 @@ class AnimatedOffsetPadding:
             h_offset = int(round(horiz_start + (horiz_end - horiz_start) * progress))
             v_offset = int(round(vert_start + (vert_end - vert_start) * progress))
             
+            # Create feathered mask (white outside, black inside with feathering)
             mask = torch.ones((new_height, new_width), dtype=torch.float32)
             black_region = self.create_feathered_mask(h, w, v_offset, h_offset, new_height, new_width, feathering)
-            
-            new_images[i, v_offset:v_offset+h, h_offset:h_offset+w, :] = image[i]
             mask[v_offset:v_offset+h, h_offset:h_offset+w] = black_region
             masks.append(mask)
+            
+            # Create attention mask (black outside, white inside, no feathering)
+            attn_mask = torch.zeros((new_height, new_width), dtype=torch.float32)
+            attn_mask[v_offset:v_offset+h, h_offset:h_offset+w] = 1.0
+            attn_masks.append(attn_mask)
+            
+            # Place image
+            new_images[i, v_offset:v_offset+h, h_offset:h_offset+w, :] = image[i]
         
-        return (new_images, torch.stack(masks, dim=0))
+        return (new_images, 
+                torch.stack(masks, dim=0),
+                torch.stack(attn_masks, dim=0))
 
 NODE_CLASS_MAPPINGS = {"AnimatedOffsetPadding": AnimatedOffsetPadding}
 NODE_DISPLAY_NAME_MAPPINGS = {"AnimatedOffsetPadding": "Animated Offset Padding"}
